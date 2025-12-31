@@ -713,6 +713,10 @@ class BookViewer:
     - Borrowing history
     - Quick action buttons
     """
+    # Class constants
+    AVERAGE_BOOK_PAGES = 400  # Assumed pages for progress calculation
+    MAX_HISTORY_ENTRIES = 10  # Number of history entries to show in preview
+    
     def __init__(self, parent, book_id, db):
         self.parent = parent
         self.book_id = book_id
@@ -880,7 +884,7 @@ class BookViewer:
         
         # Populate history
         history = self.db.get_book_history(self.book_id)
-        for h in history[:10]:  # Show last 10 entries
+        for h in history[:self.MAX_HISTORY_ENTRIES]:  # Show preview of recent entries
             progress_text = f"{h['progress']}%" if h['progress'] else "N/A"
             returned = h['returned_on'] if h['returned_on'] else "Active"
             history_tree.insert("", "end", values=(h["person"], h["borrowed_on"], returned, progress_text))
@@ -904,9 +908,8 @@ class BookViewer:
             # Ease-out effect
             eased_progress = 1 - math.pow(1 - progress, 3)
             
-            # Scale window
+            # Scale window (start at 70%, grow to 100%)
             scale = 0.7 + (0.3 * eased_progress)
-            alpha = eased_progress
             
             # Draw book cover with animation
             self.draw_book_cover(scale)
@@ -1079,7 +1082,7 @@ class BookViewer:
             return
         
         progress = self.loan_data["progress"]
-        total_pages = 400  # Average book length
+        total_pages = self.AVERAGE_BOOK_PAGES
         current_page = int(total_pages * progress / 100)
         
         page_text = f"📄 Page {current_page} of {total_pages}"
