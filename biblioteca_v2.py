@@ -3,6 +3,7 @@ from datetime import date, timedelta
 import random
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
+import math
 
 DB_PATH = "library.db"
 DEFAULT_ID_TARGET = 100
@@ -700,6 +701,460 @@ class LibraryDB:
         return cur.fetchall()
 
 # --------------------------
+# BookViewer - Animated Book Detail Window
+# --------------------------
+class BookViewer:
+    """
+    Displays an animated book detail view with:
+    - 3D book cover visualization
+    - Circular and linear progress indicators
+    - Page counter estimation
+    - Time spent reading
+    - Borrowing history
+    - Quick action buttons
+    """
+    def __init__(self, parent, book_id, db):
+        self.parent = parent
+        self.book_id = book_id
+        self.db = db
+        self.window = tk.Toplevel(parent)
+        self.window.title("Book Details")
+        self.window.configure(bg="#FFF8DC")  # Light cream background
+        self.window.geometry("800x600")
+        
+        # Animation variables
+        self.animation_step = 0
+        self.animation_max_steps = 15
+        
+        # Fetch book data
+        self.book_data = self._fetch_book_data()
+        if not self.book_data:
+            messagebox.showerror("Error", "Book not found")
+            self.window.destroy()
+            return
+        
+        # Fetch active loan data for progress tracking
+        self.loan_data = self._fetch_active_loan_data()
+        
+        # Setup UI
+        self._setup_ui()
+        
+        # Start opening animation
+        self.animate_open()
+    
+    def _fetch_book_data(self):
+        """Fetch book information from database"""
+        try:
+            cur = self.db.conn.cursor()
+            cur.execute("SELECT * FROM books WHERE id=?", (self.book_id,))
+            return cur.fetchone()
+        except Exception as e:
+            print(f"Error fetching book: {e}")
+            return None
+    
+    def _fetch_active_loan_data(self):
+        """Fetch active loan data for this book (if any)"""
+        try:
+            cur = self.db.conn.cursor()
+            cur.execute("""
+                SELECT l.*, p.name as person_name
+                FROM loans l
+                JOIN persons p ON l.person_id = p.id
+                WHERE l.book_id=? AND l.returned_on IS NULL
+                ORDER BY l.borrowed_on DESC
+                LIMIT 1
+            """, (self.book_id,))
+            return cur.fetchone()
+        except Exception:
+            return None
+    
+    def _setup_ui(self):
+        """Setup the main UI layout"""
+        # Main container with padding
+        main_frame = tk.Frame(self.window, bg="#FFF8DC")
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        
+        # Top section: Book cover and info side by side
+        top_frame = tk.Frame(main_frame, bg="#FFF8DC")
+        top_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Left: Book cover canvas
+        self.cover_frame = tk.Frame(top_frame, bg="#FFF8DC")
+        self.cover_frame.pack(side=tk.LEFT, padx=10)
+        
+        self.cover_canvas = tk.Canvas(self.cover_frame, width=250, height=350, bg="#FFF8DC", highlightthickness=0)
+        self.cover_canvas.pack()
+        
+        # Right: Book information and progress
+        info_frame = tk.Frame(top_frame, bg="#FFF8DC")
+        info_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10)
+        
+        # Book title
+        title_label = tk.Label(info_frame, text=self.book_data["title"], 
+                              font=("Segoe UI", 18, "bold"), bg="#FFF8DC", fg="#2C3E50")
+        title_label.pack(anchor="w", pady=(0, 5))
+        
+        # Author
+        author_label = tk.Label(info_frame, text=f"by {self.book_data['author']}", 
+                               font=("Segoe UI", 12, "italic"), bg="#FFF8DC", fg="#555")
+        author_label.pack(anchor="w", pady=(0, 10))
+        
+        # ISBN
+        isbn_label = tk.Label(info_frame, text=f"ISBN: {self.book_data['isbn'] or 'N/A'}", 
+                             font=("Segoe UI", 10), bg="#FFF8DC", fg="#555")
+        isbn_label.pack(anchor="w", pady=2)
+        
+        # Total copies and availability
+        available = self.db.available_copies(self.book_id)
+        total = self.book_data["total_copies"]
+        avail_text = f"Copies: {total} total, {available} available"
+        avail_color = "#27AE60" if available > 0 else "#E74C3C"
+        avail_label = tk.Label(info_frame, text=avail_text, 
+                              font=("Segoe UI", 10, "bold"), bg="#FFF8DC", fg=avail_color)
+        avail_label.pack(anchor="w", pady=2)
+        
+        # Progress section (only if there's an active loan)
+        if self.loan_data:
+            progress_frame = tk.Frame(info_frame, bg="#FFF8DC")
+            progress_frame.pack(fill=tk.BOTH, expand=True, pady=20)
+            
+            # Reading Progress header
+            tk.Label(progress_frame, text="📖 Reading Progress", 
+                    font=("Segoe UI", 14, "bold"), bg="#FFF8DC", fg="#2C3E50").pack(anchor="w", pady=(0, 10))
+            
+            # Progress indicators container
+            indicators_frame = tk.Frame(progress_frame, bg="#FFF8DC")
+            indicators_frame.pack(fill=tk.BOTH, expand=True)
+            
+            # Left: Circular progress
+            circular_frame = tk.Frame(indicators_frame, bg="#FFF8DC")
+            circular_frame.pack(side=tk.LEFT, padx=(0, 20))
+            
+            self.circular_canvas = tk.Canvas(circular_frame, width=120, height=120, bg="#FFF8DC", highlightthickness=0)
+            self.circular_canvas.pack()
+            
+            # Right: Details (linear bar, page counter, time)
+            details_frame = tk.Frame(indicators_frame, bg="#FFF8DC")
+            details_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            
+            # Linear progress bar
+            self.linear_frame = tk.Frame(details_frame, bg="#FFF8DC")
+            self.linear_frame.pack(fill=tk.X, pady=5)
+            
+            # Page counter
+            self.page_label = tk.Label(details_frame, text="", 
+                                       font=("Segoe UI", 11), bg="#FFF8DC", fg="#2C3E50")
+            self.page_label.pack(anchor="w", pady=5)
+            
+            # Time spent
+            self.time_label = tk.Label(details_frame, text="", 
+                                      font=("Segoe UI", 11), bg="#FFF8DC", fg="#2C3E50")
+            self.time_label.pack(anchor="w", pady=5)
+            
+            # Current reader info
+            reader_text = f"Currently reading by: {self.loan_data['person_name']}"
+            tk.Label(details_frame, text=reader_text, 
+                    font=("Segoe UI", 9, "italic"), bg="#FFF8DC", fg="#7F8C8D").pack(anchor="w", pady=5)
+        
+        # Bottom section: History and actions
+        bottom_frame = tk.Frame(main_frame, bg="#FFF8DC")
+        bottom_frame.pack(fill=tk.BOTH, expand=True, pady=(20, 0))
+        
+        # History label
+        tk.Label(bottom_frame, text="📚 Borrowing History", 
+                font=("Segoe UI", 12, "bold"), bg="#FFF8DC", fg="#2C3E50").pack(anchor="w", pady=(0, 5))
+        
+        # History treeview
+        history_tree = ttk.Treeview(bottom_frame, 
+                                    columns=("person", "borrowed", "returned", "progress"), 
+                                    show="headings", height=5)
+        history_tree.heading("person", text="Reader")
+        history_tree.heading("borrowed", text="Borrowed")
+        history_tree.heading("returned", text="Returned")
+        history_tree.heading("progress", text="Progress")
+        history_tree.column("person", width=200)
+        history_tree.column("borrowed", width=100)
+        history_tree.column("returned", width=100)
+        history_tree.column("progress", width=100)
+        history_tree.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        # Populate history
+        history = self.db.get_book_history(self.book_id)
+        for h in history[:10]:  # Show last 10 entries
+            progress_text = f"{h['progress']}%" if h['progress'] else "N/A"
+            returned = h['returned_on'] if h['returned_on'] else "Active"
+            history_tree.insert("", "end", values=(h["person"], h["borrowed_on"], returned, progress_text))
+        
+        # Action buttons
+        button_frame = tk.Frame(main_frame, bg="#FFF8DC")
+        button_frame.pack(fill=tk.X, pady=(10, 0))
+        
+        style = ttk.Style()
+        style.configure("Action.TButton", font=("Segoe UI", 10), padding=8)
+        
+        ttk.Button(button_frame, text="Close", command=self.animate_close, style="Action.TButton").pack(side=tk.RIGHT, padx=5)
+        ttk.Button(button_frame, text="View Full History", command=self._show_full_history, style="Action.TButton").pack(side=tk.RIGHT, padx=5)
+    
+    def animate_open(self):
+        """Smooth opening animation with scaling effect"""
+        if self.animation_step < self.animation_max_steps:
+            self.animation_step += 1
+            progress = self.animation_step / self.animation_max_steps
+            
+            # Ease-out effect
+            eased_progress = 1 - math.pow(1 - progress, 3)
+            
+            # Scale window
+            scale = 0.7 + (0.3 * eased_progress)
+            alpha = eased_progress
+            
+            # Draw book cover with animation
+            self.draw_book_cover(scale)
+            
+            # Draw progress indicators if loan exists
+            if self.loan_data:
+                self.draw_circular_progress(eased_progress)
+                self.draw_linear_progress(eased_progress)
+                self.draw_page_counter()
+                self.draw_time_display()
+            
+            # Continue animation
+            self.window.after(20, self.animate_open)
+        else:
+            # Final draw
+            self.draw_book_cover(1.0)
+            if self.loan_data:
+                self.draw_circular_progress(1.0)
+                self.draw_linear_progress(1.0)
+                self.draw_page_counter()
+                self.draw_time_display()
+    
+    def draw_book_cover(self, scale=1.0):
+        """Draw 3D-style book cover with shadows"""
+        self.cover_canvas.delete("all")
+        
+        # Base dimensions
+        width = 200 * scale
+        height = 280 * scale
+        x = (250 - width) / 2
+        y = (350 - height) / 2
+        
+        # Shadow (offset)
+        shadow_offset = 5
+        self.cover_canvas.create_rectangle(
+            x + shadow_offset, y + shadow_offset,
+            x + width + shadow_offset, y + height + shadow_offset,
+            fill="#999", outline=""
+        )
+        
+        # Book cover (main)
+        self.cover_canvas.create_rectangle(
+            x, y, x + width, y + height,
+            fill="#BC7325", outline="#8B5A2B", width=2
+        )
+        
+        # Spine effect (left side)
+        spine_width = 15 * scale
+        self.cover_canvas.create_rectangle(
+            x, y, x + spine_width, y + height,
+            fill="#8B5A2B", outline=""
+        )
+        
+        # Title on cover (scaled)
+        title = self.book_data["title"]
+        if len(title) > 25:
+            title = title[:25] + "..."
+        
+        font_size = int(14 * scale)
+        if font_size < 8:
+            font_size = 8
+            
+        self.cover_canvas.create_text(
+            x + width/2, y + height/3,
+            text=title,
+            fill="white",
+            font=("Segoe UI", font_size, "bold"),
+            width=width - 30
+        )
+        
+        # Author on cover
+        author = self.book_data["author"] or ""
+        if len(author) > 20:
+            author = author[:20] + "..."
+        
+        author_font_size = int(10 * scale)
+        if author_font_size < 7:
+            author_font_size = 7
+            
+        self.cover_canvas.create_text(
+            x + width/2, y + height - 30*scale,
+            text=author,
+            fill="white",
+            font=("Segoe UI", author_font_size, "italic")
+        )
+        
+        # Decorative lines
+        line_y = y + height/2
+        self.cover_canvas.create_line(
+            x + 20*scale, line_y, x + width - 20*scale, line_y,
+            fill="#D4A574", width=int(2*scale)
+        )
+    
+    def draw_circular_progress(self, animation_progress=1.0):
+        """Draw circular progress indicator with color coding"""
+        self.circular_canvas.delete("all")
+        
+        progress = self.loan_data["progress"] if self.loan_data else 0
+        
+        # Determine color based on progress
+        if progress < 34:
+            color = "#E74C3C"  # Red
+        elif progress < 67:
+            color = "#F39C12"  # Yellow
+        else:
+            color = "#27AE60"  # Green
+        
+        # Circle dimensions
+        center_x, center_y = 60, 60
+        radius = 45
+        
+        # Background circle
+        self.circular_canvas.create_oval(
+            center_x - radius, center_y - radius,
+            center_x + radius, center_y + radius,
+            outline="#E0E0E0", width=8, fill="#FFF8DC"
+        )
+        
+        # Progress arc (animated)
+        extent = -(progress * 3.6 * animation_progress)  # Negative for clockwise
+        if abs(extent) > 1:
+            self.circular_canvas.create_arc(
+                center_x - radius, center_y - radius,
+                center_x + radius, center_y + radius,
+                start=90, extent=extent,
+                outline=color, width=8, style=tk.ARC
+            )
+        
+        # Percentage text in center
+        self.circular_canvas.create_text(
+            center_x, center_y,
+            text=f"{int(progress * animation_progress)}%",
+            font=("Segoe UI", 20, "bold"),
+            fill=color
+        )
+    
+    def draw_linear_progress(self, animation_progress=1.0):
+        """Draw linear progress bar"""
+        # Clear previous widgets
+        for widget in self.linear_frame.winfo_children():
+            widget.destroy()
+        
+        progress = self.loan_data["progress"] if self.loan_data else 0
+        
+        # Determine color
+        if progress < 34:
+            color = "#E74C3C"
+        elif progress < 67:
+            color = "#F39C12"
+        else:
+            color = "#27AE60"
+        
+        # Container frame
+        bar_bg = tk.Frame(self.linear_frame, bg="#E0E0E0", height=20)
+        bar_bg.pack(fill=tk.X)
+        
+        # Progress fill
+        fill_width = progress * animation_progress
+        if fill_width > 0:
+            bar_fill = tk.Frame(bar_bg, bg=color, height=20)
+            bar_fill.place(relwidth=fill_width/100, relheight=1.0)
+        
+        # Percentage label
+        tk.Label(self.linear_frame, text=f"Progress: {int(progress * animation_progress)}%",
+                font=("Segoe UI", 9), bg="#FFF8DC", fg="#555").pack(anchor="w", pady=2)
+    
+    def draw_page_counter(self):
+        """Display estimated page counter"""
+        if not self.loan_data:
+            return
+        
+        progress = self.loan_data["progress"]
+        total_pages = 400  # Average book length
+        current_page = int(total_pages * progress / 100)
+        
+        page_text = f"📄 Page {current_page} of {total_pages}"
+        self.page_label.config(text=page_text)
+    
+    def draw_time_display(self):
+        """Display time spent reading"""
+        if not self.loan_data:
+            return
+        
+        minutes = self.loan_data["time_spent_minutes"] or 0
+        
+        if minutes < 60:
+            time_text = f"⏱️ Time spent: {minutes}m"
+        else:
+            hours = minutes // 60
+            mins = minutes % 60
+            if mins == 0:
+                time_text = f"⏱️ Time spent: {hours}h"
+            else:
+                time_text = f"⏱️ Time spent: {hours}h {mins}m"
+        
+        self.time_label.config(text=time_text)
+    
+    def animate_close(self):
+        """Smooth closing animation"""
+        # Simple fade/scale out
+        self.window.destroy()
+    
+    def _show_full_history(self):
+        """Show full borrowing history in a new window"""
+        history_window = tk.Toplevel(self.window)
+        history_window.title(f"Full History - {self.book_data['title']}")
+        history_window.geometry("700x400")
+        
+        tree = ttk.Treeview(history_window,
+                           columns=("person", "borrowed", "due", "returned", "progress", "time"),
+                           show="headings")
+        tree.heading("person", text="Reader")
+        tree.heading("borrowed", text="Borrowed")
+        tree.heading("due", text="Due Date")
+        tree.heading("returned", text="Returned")
+        tree.heading("progress", text="Progress")
+        tree.heading("time", text="Time Spent")
+        
+        tree.column("person", width=150)
+        tree.column("borrowed", width=90)
+        tree.column("due", width=90)
+        tree.column("returned", width=90)
+        tree.column("progress", width=80)
+        tree.column("time", width=100)
+        
+        tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        history = self.db.get_book_history(self.book_id)
+        for h in history:
+            progress_text = f"{h['progress']}%" if h['progress'] else "N/A"
+            returned = h['returned_on'] if h['returned_on'] else "Active"
+            
+            minutes = h['time_spent_minutes'] or 0
+            if minutes < 60:
+                time_text = f"{minutes}m"
+            else:
+                hours = minutes // 60
+                mins = minutes % 60
+                time_text = f"{hours}h {mins}m" if mins > 0 else f"{hours}h"
+            
+            tree.insert("", "end", values=(
+                h["person"], h["borrowed_on"], h["due_on"], 
+                returned, progress_text, time_text
+            ))
+        
+        ttk.Button(history_window, text="Close", command=history_window.destroy).pack(pady=10)
+
+# --------------------------
 # GUI - Tkinter
 # --------------------------
 class LibraryGUI:
@@ -731,6 +1186,10 @@ class LibraryGUI:
         self.loan_search_var = tk.StringVar()
 
         self._setup_ui()
+        
+        # Bind double-click on books to open BookViewer
+        self.books_tree.bind('<Double-Button-1>', self.on_book_double_click)
+        
         self.refresh_books()
         self.refresh_persons()
         self.refresh_loans()
@@ -1355,6 +1814,13 @@ class LibraryGUI:
             tree.insert("", "end", values=(r["loan_id"], r["book"], r["borrowed_on"], r["due_on"], r["returned_on"], display))
         tree.pack(fill="both", expand=True)
         ttk.Button(dlg, text="Închide", command=dlg.destroy).pack(pady=4)
+    
+    def on_book_double_click(self, event):
+        """Handle double-click on a book in the treeview to open BookViewer"""
+        selection = self.books_tree.selection()
+        if selection:
+            book_id = self.books_tree.item(selection[0])["values"][0]
+            BookViewer(self.root, book_id, self.db)
 
 # --------------------------
 # Run app
